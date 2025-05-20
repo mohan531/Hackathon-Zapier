@@ -1,0 +1,9 @@
+errors:
+  - pattern: "Permission denied"
+    resolution: "Check your access rights or contact IT."
+  - pattern: "ModuleNotFoundError"
+    resolution: "Make sure the required Python module is installed."
+  - pattern: "JavaScript load error"
+    resolution: "Ensure your network allows scripts from Atlassian domains. See: https://id-frontend.prod-east.frontend.public.atl-paas.net"
+  - pattern: "not authorized"
+    resolution: "You may not have the required permissions. Please request access from your team admin." 

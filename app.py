@@ -1,68 +1,186 @@
+import pathlib
+import textwrap
+import google.generativeai as genai
 import os
-import asyncio
+import requests
+import re
+# New imports for .env and Google API
+from pathlib import Path
 from dotenv import load_dotenv
-from pprint import pprint
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.prebuilt import create_react_agent
-from langchain_groq import ChatGroq
+# Load environment variables from .env if present
+load_dotenv(dotenv_path=Path('.') / '.env')
 
-# Load environment variables
-load_dotenv()
+# from google.colab import userdata  # Not needed outside Colab
+# from IPython.display import Markdown, display  # Not needed outside Colab
 
-# Read environment variables
-ZAPIER_MCP_URL = os.getenv("ZAPIER_MCP_URL")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-SLACK_CHANNEL = os.getenv("SLACK_CHANNEL", "#general")
-SLACK_MESSAGE = os.getenv("SLACK_MESSAGE", "Hello from LangChain MCP adapter!")
+def text_to_markdown(text):
+    text = text.replace(".", "*")
+    return textwrap.indent(text, '>', predicate=lambda _: True)
 
-# Async main function
-async def main():
-    # Initialize MultiServerMCPClient (no async with here)
-    client = MultiServerMCPClient({
-        "zapier": {
-            "url": ZAPIER_MCP_URL,
-            "transport": "sse"
-        }
-    })
-    
+# Set your Gemini API key
+os.environ["GEMINI_API_KEY"] = os.getenv("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-    # Use session with the "zapier" server
-    async with client.session("zapier") as session:
+# Google Docs API scopes and token path
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+TOKEN_PATH = 'token.json'
+CREDENTIALS_PATH = 'credentials.json'  # Download this from Google Cloud Console
 
-        tools = await session.list_tools()
-        # Initialize Gemini model
-        model =  ChatGroq(model="qwen-qwq-32b")
+def fetch_google_doc(doc_url):
+    # Try public export first
+    match = re.search(r"/d/([a-zA-Z0-9-_]+)", doc_url)
+    if not match:
+        raise ValueError("Invalid Google Doc URL")
+    doc_id = match.group(1)
+    export_url = f"https://docs.google.com/document/d/{doc_id}/export?format=txt"
+    resp = requests.get(export_url)
+    if resp.status_code == 200:
+        return resp.text
+    # If not public, try Google Drive API
+    return fetch_private_google_doc(doc_id)
 
-        # Create agent
-        agent = create_react_agent(model, tools)
-
-        # Prepare agent input
-        agent_input = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f'Please post the message "{SLACK_MESSAGE}" to the {SLACK_CHANNEL} Slack channel.'
-                }
-            ]
-        }
-
-        print("\n🤖 Invoking LangGraph agent...")
-        agent_result = await agent.ainvoke(agent_input)
-
-        # Parse agent response
-        final_message = agent_result.get("final_answer") or agent_result.get("output")
-
-        if final_message:
-            print("\n✅ Agent output:", final_message)
+def fetch_private_google_doc(doc_id):
+    creds = None
+    if os.path.exists(TOKEN_PATH):
+        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
         else:
-            for msg in reversed(agent_result.get("messages", [])):
-                if msg.get("type") == "ai" and msg.get("content"):
-                    print("\n✅ Agent said:", msg["content"])
-                    break
-            else:
-                print("⚠️ No AI output found in agent result.")
+            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open(TOKEN_PATH, 'w') as token:
+            token.write(creds.to_json())
+    service = build('drive', 'v3', credentials=creds)
+    # Export as plain text
+    resp = service.files().export(fileId=doc_id, mimeType='text/plain').execute()
+    return resp.decode('utf-8') if isinstance(resp, bytes) else resp
 
-# Entrypoint
+def fetch_confluence_page_api(base_url, page_id, email, api_token):
+    api_url = f"{base_url}/wiki/rest/api/content/{page_id}?expand=body.storage"
+    auth = (email, api_token)
+    headers = {"Accept": "application/json"}
+    resp = requests.get(api_url, auth=auth, headers=headers)
+    if resp.status_code != 200:
+        raise Exception(f"Failed to fetch Confluence page via API: {resp.text}")
+    data = resp.json()
+    html = data["body"]["storage"]["value"]
+    text = re.sub('<[^<]+?>', '', html)
+    return text
+
+def resolve_short_link_to_page_id(base_url, short_link, email, api_token):
+    url = f"{base_url}/wiki{short_link}"
+    auth = (email, api_token)
+    resp = requests.get(url, auth=auth)
+    if resp.status_code != 200:
+        raise Exception("Failed to resolve short link. Make sure the link is correct and you have access.")
+    match = re.search(r'contentId=(\d+)', resp.text)
+    if match:
+        return match.group(1)
+    match = re.search(r'/pages/(viewpage\.action\?pageId=(\d+))', resp.text)
+    if match:
+        return match.group(2)
+    raise Exception("Could not resolve page ID from short link.")
+
+def fetch_confluence_page(url, email=None, api_token=None):
+    match_page = re.search(r'(https://[^/]+)/wiki/pages/viewpage\\.action\\?pageId=(\\d+)', url)
+    match_short = re.search(r'(https://[^/]+)/wiki(/x/[^/?#]+)', url)
+    if match_page:
+        base_url = match_page.group(1)
+        page_id = match_page.group(2)
+    elif match_short:
+        base_url = match_short.group(1)
+        short_link = match_short.group(2)
+        if not email or not api_token:
+            raise Exception("Authentication required to resolve short link for private pages.")
+        page_id = resolve_short_link_to_page_id(base_url, short_link, email, api_token)
+    else:
+        resp = requests.get(url)
+        if resp.status_code != 200:
+            raise Exception("Failed to fetch Confluence page. Make sure it is public or provide authentication.")
+        text = re.sub('<[^<]+?>', '', resp.text)
+        return text
+    if not email or not api_token:
+        raise Exception("Email and API token required for private Confluence pages.")
+    return fetch_confluence_page_api(base_url, page_id, email, api_token)
+
+def is_error_page(text):
+    error_signatures = [
+        "enable JavaScript", "log in", "not authorized", "couldn't be loaded", "error", "Atlassian"  # add more as needed
+    ]
+    return any(sig.lower() in text.lower() for sig in error_signatures)
+
+def summarize_text(text):
+    prompt = (
+        "You are an expert technical writer. Read the following content and provide a structured summary. "
+        "Your summary should include:\n"
+        "1. A TL;DR (1-2 sentences)\n"
+        "2. Key Points (bulleted list)\n"
+        "3. Action Items (if any, as a bulleted list)\n"
+        "If the content is not useful or looks like an error page, say so.\n\n"
+        f"Content:\n{text}"
+    )
+    response = model.generate_content(prompt)
+    return response.text
+
+
+def fetch_confluence_page_content(page_id, base_url, email, api_token):
+    api_url = f'{base_url}/wiki/rest/api/content/{page_id}?expand=body.storage'
+    auth = (email, api_token)
+    headers = {"Accept": "application/json"}
+    resp = requests.get(api_url, auth=auth, headers=headers)
+    if resp.status_code != 200:
+        raise Exception(f"Failed to fetch Confluence page: {resp.text}")
+    data = resp.json()
+    html = data["body"]["storage"]["value"]
+    # Remove HTML tags for summarization
+    text = re.sub('<[^<]+?>', '', html)
+    return text
+
+def extract_baseurl_and_pageid(url, email=None, api_token=None):
+    # Always use static base URL and static page ID for testing
+    base_url = "https://testhack.atlassian.net"
+    page_id = "491522"
+    return base_url, page_id
+
+def main():
+    url = input("Enter a Confluence or Google Doc link (or just your Confluence base URL to browse): ").strip()
+    email = os.environ.get("ATLASSIAN_EMAIL")
+    api_token = os.environ.get("ATLASSIAN_API_TOKEN")
+    if ("atlassian.net/wiki" in url or "confluence" in url) and (not email or not api_token):
+        print("Error: To access private Confluence pages, you must set ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN as environment variables.")
+        print("Example:")
+        print("  export ATLASSIAN_EMAIL=your.email@domain.com")
+        print("  export ATLASSIAN_API_TOKEN=your_api_token")
+        return
+    try:
+        if "docs.google.com/document" in url:
+            content = fetch_google_doc(url)
+            if is_error_page(content):
+                print("Warning: The fetched content looks like an error page or access is restricted. The summary may not be meaningful.\n")
+            summary = summarize_text(content[:8000])  # Limit to 8k chars for demo
+            print("\n===== SUMMARY =====\n")
+            print(text_to_markdown(summary))
+            print("\n===================\n")
+        elif "atlassian.net/wiki" in url or "confluence" in url:
+            base_url, page_id = extract_baseurl_and_pageid(url, email, api_token)
+            content = fetch_confluence_page_content(page_id, base_url, email, api_token)
+            summary = summarize_text(content[:8000])  # Limit to 8k chars for demo
+            print("\n===== SUMMARY =====\n")
+            print(text_to_markdown(summary))
+            print("\n===================\n")
+        
+        else:
+            print("Unsupported URL. Please provide a Google Doc or Confluence link, or your Confluence base URL to browse.")
+            return
+    except Exception as e:
+        print(f"Error: {e}")
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
+    
