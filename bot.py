@@ -48,14 +48,14 @@ def handle_new_joiner_yes(ack, body, client):
     dm_channel = get_dm_channel_id(client, user_id)
     client.chat_postMessage(
         channel=dm_channel,
-        text="Which team do you belong to?",
+        text="Which team(s) do you belong to?",
         blocks=[
-            {"type": "section", "text": {"type": "mrkdwn", "text": "Which team do you belong to?"},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "Which team(s) do you belong to?"},
              "accessory": {
-                 "type": "static_select",
-                 "placeholder": {"type": "plain_text", "text": "Select a team"},
+                 "type": "multi_static_select",
+                 "placeholder": {"type": "plain_text", "text": "Select team(s)"},
                  "options": team_options,
-                 "action_id": "select_team"
+                 "action_id": "select_teams"
              }}
         ]
     )
@@ -101,25 +101,20 @@ def handle_has_doubt_no(ack, body, client):
     )
     user_state.pop(user_id, None)
 
-@app.action("select_team")
-def handle_select_team(ack, body, client):
+@app.action("select_teams")
+def handle_select_teams(ack, body, client):
     ack()
     user_id = body["user"]["id"]
-    team = body["actions"][0]["selected_option"]["value"]
-    links = TEAM_LINKS.get(team)
-    if not links:
-        dm_channel = get_dm_channel_id(client, user_id)
-        client.chat_postMessage(
-            channel=dm_channel,
-            text=f"Sorry, I couldn't find any links for the team '{team}'. Please try again."
-        )
-        return
-    user_state[user_id] = {"team": team, "links": links, "awaiting_summarize": True}
-    links_str = "\n".join(f"- {l}" for l in links)
-    # --- Channel invite logic ---
-    team_channels = CHANNEL_MAP.get(team, [])
+    selected_teams = [opt["value"] for opt in body["actions"][0]["selected_options"]]
+    all_links = []
+    all_channels = set()
+    for team in selected_teams:
+        links = TEAM_LINKS.get(team, [])
+        all_links.extend(links)
+        team_channels = CHANNEL_MAP.get(team, [])
+        all_channels.update(team_channels)
     common_channels = CHANNEL_MAP.get("common", [])
-    all_channels = set(team_channels + common_channels)
+    all_channels.update(common_channels)
     invited_channels = []
     for ch_id in all_channels:
         try:
@@ -133,12 +128,13 @@ def handle_select_team(ack, body, client):
             channel=dm_channel,
             text=f"You have been added to these channels: {', '.join(invited_channels)}"
         )
-    # --- End channel invite logic ---
+    links_str = "\n".join(f"- {l}" for l in all_links)
     dm_channel = get_dm_channel_id(client, user_id)
     client.chat_postMessage(
         channel=dm_channel,
-        text=f"Here are the links for *{team}*:\n{links_str}\n\nIf you want a summary of any link, reply with the link. Otherwise, say 'done'."
+        text=f"Here are the links for your selected team(s):\n{links_str}\n\nIf you want a summary of any link, reply with the link. Otherwise, say 'done'."
     )
+    user_state[user_id] = {"teams": selected_teams, "links": all_links, "awaiting_summarize": True}
 
 @app.event("app_mention")
 @app.event("message")
@@ -163,7 +159,7 @@ def handle_message_events(body, say, event, context, client):
         # If not in a flow, send the initial message
         client.chat_postMessage(
             channel=user_id,
-            text="This channel is for getting info related to your team or resolving errors you are facing. What do you need help with?",
+            text="This channel is for getting info related to your team or resolving errors you are facing and if you want to summarize a channel, use /summarize_channel. What do you need help with?",
             blocks=[
                 {"type": "section", "text": {"type": "mrkdwn", "text": "This channel is for getting info related to your *team* or resolving *errors* you are facing. What do you need help with?"}},
                 {"type": "actions", "elements": [
