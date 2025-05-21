@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from slack_bolt import App
+from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 # Load environment variables from .env if present
 load_dotenv(dotenv_path=Path('.') / '.env')
@@ -30,6 +32,11 @@ model = genai.GenerativeModel("gemini-1.5-flash")
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 TOKEN_PATH = 'token.json'
 CREDENTIALS_PATH = 'credentials.json'  # Download this from Google Cloud Console
+
+SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
+SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]
+
+app = App(token=SLACK_BOT_TOKEN)
 
 def fetch_google_doc(doc_url):
     # Try public export first
@@ -148,6 +155,70 @@ def extract_baseurl_and_pageid(url, email=None, api_token=None):
     page_id = "491522"
     return base_url, page_id
 
+@app.command("/summarize_channel")
+def handle_summarize_channel(ack, body, client, respond):
+    ack()
+    channel_id = body["channel_id"]
+    user_id = body["user_id"]
+
+    # Fetch recent messages (e.g., last 100)
+    result = client.conversations_history(channel=channel_id, limit=100)
+    messages = result["messages"]
+    # Concatenate text, skipping bot messages and empty text
+    conversation = "\n".join(
+        m.get("text", "") for m in reversed(messages) if m.get("text") and not m.get("subtype")
+    )
+    if not conversation.strip():
+        respond("No messages to summarize.")
+        return
+
+    # Summarize using Gemini
+    summary = summarize_text(conversation[:8000])  # Limit to 8k chars for Gemini
+    # Respond in channel (or DM if you prefer)
+    respond(f"*Channel Summary:*\n{summary}")
+
+@app.event("app_mention")
+def handle_mention_summarize(event, say, client):
+    text = event.get("text", "").lower()
+    channel_id = event["channel"]
+    user_id = event["user"]
+    if "summarize" in text:
+        # Fetch recent messages (e.g., last 100)
+        result = client.conversations_history(channel=channel_id, limit=100)
+        messages = result["messages"]
+        # Concatenate text, skipping bot messages and empty text
+        conversation = "\n".join(
+            m.get("text", "") for m in reversed(messages) if m.get("text") and not m.get("subtype")
+        )
+        if not conversation.strip():
+            say("No messages to summarize.")
+            return
+        # Summarize using Gemini
+        summary = summarize_text(conversation[:8000])  # Limit to 8k chars for Gemini
+        say(f"*Channel Summary:*\n{summary}")
+
+@app.event("member_joined_channel")
+def handle_member_joined_channel(body, event, client, logger):
+    user_id = event["user"]
+    logger.info(f"User {user_id} joined a channel, triggering DM onboarding.")
+    try:
+        dm_channel = client.conversations_open(users=user_id)["channel"]["id"]
+        client.chat_postMessage(
+            channel=dm_channel,
+            text=f"Welcome! Are you a new joiner?",
+            blocks=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"Welcome to the workspace, <@{user_id}>! Are you a *new joiner*?"}},
+                {"type": "actions", "elements": [
+                    {"type": "button", "text": {"type": "plain_text", "text": "Yes"}, "value": "new_joiner_yes", "action_id": "new_joiner_yes"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "No"}, "value": "new_joiner_no", "action_id": "new_joiner_no"}
+                ]}
+            ]
+        )
+        logger.info(f"Sent DM to user {user_id} in channel {dm_channel}.")
+        user_state[user_id] = {"awaiting_new_joiner": True}
+    except Exception as e:
+        logger.error(f"Failed to DM user {user_id}: {e}")
+
 def main():
     url = input("Enter a Confluence or Google Doc link (or just your Confluence base URL to browse): ").strip()
     email = os.environ.get("ATLASSIAN_EMAIL")
@@ -182,5 +253,6 @@ def main():
         print(f"Error: {e}")
 
 if __name__ == "__main__":
-    main()
+    handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+    handler.start()
     

@@ -37,24 +37,6 @@ def search_error_patterns(error_text):
             return entry["resolution"]
     return None
 
-@app.event("member_joined_channel")
-def handle_member_joined_channel(event, say, client):
-    user_id = event["user"]
-    channel_id = event["channel"]
-    # Greet and ask if new joiner
-    client.chat_postMessage(
-        channel=channel_id,
-        text=f"Welcome to the channel, <@{user_id}>! Are you a new joiner?",
-        blocks=[
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"Welcome to the channel, <@{user_id}>! Are you a *new joiner*?"}},
-            {"type": "actions", "elements": [
-                {"type": "button", "text": {"type": "plain_text", "text": "Yes"}, "value": "new_joiner_yes", "action_id": "new_joiner_yes"},
-                {"type": "button", "text": {"type": "plain_text", "text": "No"}, "value": "new_joiner_no", "action_id": "new_joiner_no"}
-            ]}
-        ]
-    )
-    user_state[user_id] = {"awaiting_new_joiner": True}
-
 @app.action("new_joiner_yes")
 def handle_new_joiner_yes(ack, body, client):
     ack()
@@ -292,6 +274,61 @@ def handle_info_error(ack, body, client):
         ]
     )
     user_state[user_id] = {"awaiting_doubt": True}
+
+@app.command("/summarize_channel")
+def handle_summarize_channel(ack, body, client, respond):
+    ack()
+    channel_id = body["channel_id"]
+    user_id = body["user_id"]
+    
+    # Fetch up to 1000 recent messages using pagination
+    messages = []
+    cursor = None
+    while len(messages) < 1000:
+        result = client.conversations_history(
+            channel=channel_id,
+            limit=min(200, 1000 - len(messages)),
+            cursor=cursor
+        )
+        messages.extend(result["messages"])
+        cursor = result.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+    # Concatenate text, skipping bot messages and empty text
+    conversation = "\n".join(
+        m.get("text", "") for m in reversed(messages) if m.get("text") and not m.get("subtype")
+    )
+    if not conversation.strip():
+        respond("No messages to summarize.")
+        return
+    # Summarize using Gemini
+    summary = summarize_text(conversation[:8000])  # Limit to 8k chars for Gemini
+    respond(f"*Channel Summary:*{summary}")
+
+@app.event("member_joined_channel")
+def handle_member_joined_channel(event, client, logger):
+    user_id = event["user"]
+    channel_id = event["channel"]
+    # Check if the channel is private
+    channel_info = client.conversations_info(channel=channel_id)["channel"]
+    if not channel_info.get("is_private"):
+        return  # Only trigger for private channels
+    try:
+        dm_channel = get_dm_channel_id(client, user_id)
+        client.chat_postMessage(
+            channel=dm_channel,
+            text=f"Welcome to JumpCloud! Are you a new joiner?",
+            blocks=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"Welcome to JumpCloud, <@{user_id}>! Are you a *new joiner*?"}},
+                {"type": "actions", "elements": [
+                    {"type": "button", "text": {"type": "plain_text", "text": "Yes"}, "value": "new_joiner_yes", "action_id": "new_joiner_yes"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "No"}, "value": "new_joiner_no", "action_id": "new_joiner_no"}
+                ]}
+            ]
+        )
+        user_state[user_id] = {"awaiting_new_joiner": True}
+    except Exception as e:
+        logger.error(f"Failed to DM user {user_id}: {e}")
 
 if __name__ == "__main__":
     handler = SocketModeHandler(app, SLACK_APP_TOKEN)
