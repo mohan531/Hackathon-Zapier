@@ -1,0 +1,17 @@
+[project]
+name = "hackathon-zapier"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "fastapi>=0.115.12",
+    "google-api-python-client>=2.169.0",
+    "google-auth>=2.40.1",
+    "google-auth-oauthlib>=1.2.2",
+    "python-dotenv>=1.1.0",
+    "requests>=2.32.3",
+    "slack-sdk>=3.35.0",
+    "uvicorn>=0.34.2",
+]
