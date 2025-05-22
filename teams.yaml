@@ -1,6 +1,10 @@
-engineering:
-  - https://docs.google.com/document/d/xxx
-  - https://testhack.atlassian.net/wiki/pages/viewpage.action?pageId=491522
-marketing:
-  - https://docs.google.com/document/d/yyy
-  - https://testhack.atlassian.net/wiki/pages/viewpage.action?pageId=491522
+Hydrogen:
+  - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/1477247378/Dynamic+Groups+UI+Overview
+    priority: 1
+  - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/2380300323/Primary+User+on+a+Device+Enrollment+Flow+Questions
+    priority: 2
+Deuterium:
+  - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/2380300323/Primary+User+on+a+Device+Enrollment+Flow+Questions
+    priority: 1
+  - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/1477247378/Dynamic+Groups+UI+Overview
+    priority: 2

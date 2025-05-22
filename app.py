@@ -68,18 +68,6 @@ def fetch_private_google_doc(doc_id):
     resp = service.files().export(fileId=doc_id, mimeType='text/plain').execute()
     return resp.decode('utf-8') if isinstance(resp, bytes) else resp
 
-def fetch_confluence_page_api(base_url, page_id, email, api_token):
-    api_url = f"{base_url}/wiki/rest/api/content/{page_id}?expand=body.storage"
-    auth = (email, api_token)
-    headers = {"Accept": "application/json"}
-    resp = requests.get(api_url, auth=auth, headers=headers)
-    if resp.status_code != 200:
-        raise Exception(f"Failed to fetch Confluence page via API: {resp.text}")
-    data = resp.json()
-    html = data["body"]["storage"]["value"]
-    text = re.sub('<[^<]+?>', '', html)
-    return text
-
 def resolve_short_link_to_page_id(base_url, short_link, email, api_token):
     url = f"{base_url}/wiki{short_link}"
     auth = (email, api_token)
@@ -93,28 +81,6 @@ def resolve_short_link_to_page_id(base_url, short_link, email, api_token):
     if match:
         return match.group(2)
     raise Exception("Could not resolve page ID from short link.")
-
-def fetch_confluence_page(url, email=None, api_token=None):
-    match_page = re.search(r'(https://[^/]+)/wiki/pages/viewpage\\.action\\?pageId=(\\d+)', url)
-    match_short = re.search(r'(https://[^/]+)/wiki(/x/[^/?#]+)', url)
-    if match_page:
-        base_url = match_page.group(1)
-        page_id = match_page.group(2)
-    elif match_short:
-        base_url = match_short.group(1)
-        short_link = match_short.group(2)
-        if not email or not api_token:
-            raise Exception("Authentication required to resolve short link for private pages.")
-        page_id = resolve_short_link_to_page_id(base_url, short_link, email, api_token)
-    else:
-        resp = requests.get(url)
-        if resp.status_code != 200:
-            raise Exception("Failed to fetch Confluence page. Make sure it is public or provide authentication.")
-        text = re.sub('<[^<]+?>', '', resp.text)
-        return text
-    if not email or not api_token:
-        raise Exception("Email and API token required for private Confluence pages.")
-    return fetch_confluence_page_api(base_url, page_id, email, api_token)
 
 def is_error_page(text):
     error_signatures = [
@@ -150,10 +116,15 @@ def fetch_confluence_page_content(page_id, base_url, email, api_token):
     return text
 
 def extract_baseurl_and_pageid(url, email=None, api_token=None):
-    # Always use static base URL and static page ID for testing
-    base_url = "https://testhack.atlassian.net"
-    page_id = "491522"
-    return base_url, page_id
+    # Always use static base URL for JumpCloud
+    base_url = "https://jumpcloud.atlassian.net"
+    # Extract the first number from the URL (pageId)
+    match = re.search(r"(\d+)", url)
+    if match:
+        page_id = match.group(1)
+        return base_url, page_id
+    else:
+        raise ValueError("Could not extract a numeric pageId from the provided URL.")
 
 @app.command("/summarize_channel")
 def handle_summarize_channel(ack, body, client, respond):
@@ -218,39 +189,6 @@ def handle_member_joined_channel(body, event, client, logger):
         user_state[user_id] = {"awaiting_new_joiner": True}
     except Exception as e:
         logger.error(f"Failed to DM user {user_id}: {e}")
-
-def main():
-    url = input("Enter a Confluence or Google Doc link (or just your Confluence base URL to browse): ").strip()
-    email = os.environ.get("ATLASSIAN_EMAIL")
-    api_token = os.environ.get("ATLASSIAN_API_TOKEN")
-    if ("atlassian.net/wiki" in url or "confluence" in url) and (not email or not api_token):
-        print("Error: To access private Confluence pages, you must set ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN as environment variables.")
-        print("Example:")
-        print("  export ATLASSIAN_EMAIL=your.email@domain.com")
-        print("  export ATLASSIAN_API_TOKEN=your_api_token")
-        return
-    try:
-        if "docs.google.com/document" in url:
-            content = fetch_google_doc(url)
-            if is_error_page(content):
-                print("Warning: The fetched content looks like an error page or access is restricted. The summary may not be meaningful.\n")
-            summary = summarize_text(content[:8000])  # Limit to 8k chars for demo
-            print("\n===== SUMMARY =====\n")
-            print(text_to_markdown(summary))
-            print("\n===================\n")
-        elif "atlassian.net/wiki" in url or "confluence" in url:
-            base_url, page_id = extract_baseurl_and_pageid(url, email, api_token)
-            content = fetch_confluence_page_content(page_id, base_url, email, api_token)
-            summary = summarize_text(content[:8000])  # Limit to 8k chars for demo
-            print("\n===== SUMMARY =====\n")
-            print(text_to_markdown(summary))
-            print("\n===================\n")
-        
-        else:
-            print("Unsupported URL. Please provide a Google Doc or Confluence link, or your Confluence base URL to browse.")
-            return
-    except Exception as e:
-        print(f"Error: {e}")
 
 if __name__ == "__main__":
     handler = SocketModeHandler(app, SLACK_APP_TOKEN)

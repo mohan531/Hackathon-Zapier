@@ -37,6 +37,18 @@ def search_error_patterns(error_text):
             return entry["resolution"]
     return None
 
+def format_links_with_priority(links):
+    # links: list of dicts with 'url' and 'priority'
+    sorted_links = sorted(links, key=lambda l: l.get('priority', 99))
+    first = [l['url'] for l in sorted_links if l.get('priority', 99) == 1]
+    next_ = [l['url'] for l in sorted_links if l.get('priority', 99) != 1]
+    msg = ""
+    if first:
+        msg += "*Go through these first:*\n" + "\n".join(f"- {url}" for url in first) + "\n"
+    if next_:
+        msg += "*Then look at these:*\n" + "\n".join(f"- {url}" for url in next_)
+    return msg
+
 @app.action("new_joiner_yes")
 def handle_new_joiner_yes(ack, body, client):
     ack()
@@ -128,13 +140,14 @@ def handle_select_teams(ack, body, client):
             channel=dm_channel,
             text=f"You have been added to these channels: {', '.join(invited_channels)}"
         )
-    links_str = "\n".join(f"- {l}" for l in all_links)
+    # Format links with priority
+    links_str = format_links_with_priority(all_links)
     dm_channel = get_dm_channel_id(client, user_id)
     client.chat_postMessage(
         channel=dm_channel,
         text=f"Here are the links for your selected team(s):\n{links_str}\n\nIf you want a summary of any link, reply with the link. Otherwise, say 'done'."
     )
-    user_state[user_id] = {"teams": selected_teams, "links": all_links, "awaiting_summarize": True}
+    user_state[user_id] = {"teams": selected_teams, "links": [l['url'] for l in all_links], "awaiting_summarize": True}
 
 @app.event("app_mention")
 @app.event("message")
@@ -192,9 +205,20 @@ def handle_message_events(body, say, event, context, client):
         link = re.sub(r"^[^h]*https", "https", link)  # Remove anything before 'https'
         def base_url(l):
             return re.sub(r'[?#].*$', '', l.strip().replace("<", "").replace(">", ""))
+        def extract_page_id(url):
+            match = re.search(r"/pages/(\d+)", url)
+            if match:
+                return match.group(1)
+            match = re.search(r"/pages/.+?pageId=(\d+)", url)
+            if match:
+                return match.group(1)
+            match = re.search(r"/(\d+)", url)
+            if match:
+                return match.group(1)
+            return None
         matched = None
         for l in state["links"]:
-            if link == l or base_url(link) == base_url(l) or link.startswith(l):
+            if extract_page_id(link) and extract_page_id(link) == extract_page_id(l):
                 matched = l
                 break
         if not matched:
@@ -239,19 +263,25 @@ def handle_message_events(body, say, event, context, client):
 def handle_info_team(ack, body, client):
     ack()
     user_id = body["user"]["id"]
+    team_options = [
+        {"text": {"type": "plain_text", "text": team}, "value": team}
+        for team in TEAM_LINKS.keys()
+    ]
     dm_channel = get_dm_channel_id(client, user_id)
     client.chat_postMessage(
         channel=dm_channel,
-        text=f"Are you a new joiner?",
+        text="Which team(s) do you belong to?",
         blocks=[
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"Are you a *new joiner*?"}},
-            {"type": "actions", "elements": [
-                {"type": "button", "text": {"type": "plain_text", "text": "Yes"}, "value": "new_joiner_yes", "action_id": "new_joiner_yes"},
-                {"type": "button", "text": {"type": "plain_text", "text": "No"}, "value": "new_joiner_no", "action_id": "new_joiner_no"}
-            ]}
+            {"type": "section", "text": {"type": "mrkdwn", "text": "Which team(s) do you belong to?"},
+             "accessory": {
+                 "type": "multi_static_select",
+                 "placeholder": {"type": "plain_text", "text": "Select team(s)"},
+                 "options": team_options,
+                 "action_id": "select_teams"
+             }}
         ]
     )
-    user_state[user_id] = {"awaiting_new_joiner": True}
+    user_state[user_id] = {"awaiting_team_dropdown": True}
 
 @app.action("info_error")
 def handle_info_error(ack, body, client):
@@ -272,12 +302,32 @@ def handle_info_error(ack, body, client):
     user_state[user_id] = {"awaiting_doubt": True}
 
 @app.command("/summarize_channel")
-def handle_summarize_channel(ack, body, client, respond):
+def handle_summarize_channel(ack, body, client, respond, context):
     ack()
     channel_id = body["channel_id"]
     user_id = body["user_id"]
-    
-    # Fetch up to 1000 recent messages using pagination
+    text = body.get("text", "").strip()
+    thread_ts = None
+    # 1. If user provides a thread_ts argument, use it
+    if text:
+        thread_ts = text.split()[0]
+    # 2. Otherwise, try to get thread_ts from context (if used as a reply in a thread)
+    if not thread_ts:
+        message = body.get("message") or body.get("container", {})
+        thread_ts = message.get("thread_ts") or message.get("ts")
+    if thread_ts and thread_ts != body.get("trigger_id"):  # If we have a thread_ts, summarize the thread
+        result = client.conversations_replies(channel=channel_id, ts=thread_ts, limit=1000)
+        messages = result.get("messages", [])
+        conversation = "\n".join(
+            m.get("text", "") for m in messages if m.get("text") and not m.get("subtype")
+        )
+        if not conversation.strip():
+            respond("No messages to summarize in this thread.")
+            return
+        summary = summarize_text(conversation[:8000])
+        respond(f"*Thread Summary:*\n{summary}")
+        return
+    # Otherwise, summarize the channel
     messages = []
     cursor = None
     while len(messages) < 1000:
@@ -290,15 +340,13 @@ def handle_summarize_channel(ack, body, client, respond):
         cursor = result.get("response_metadata", {}).get("next_cursor")
         if not cursor:
             break
-    # Concatenate text, skipping bot messages and empty text
     conversation = "\n".join(
         m.get("text", "") for m in reversed(messages) if m.get("text") and not m.get("subtype")
     )
     if not conversation.strip():
         respond("No messages to summarize.")
         return
-    # Summarize using Gemini
-    summary = summarize_text(conversation[:8000])  # Limit to 8k chars for Gemini
+    summary = summarize_text(conversation[:8000])
     respond(f"*Channel Summary:*{summary}")
 
 @app.event("member_joined_channel")
@@ -325,6 +373,123 @@ def handle_member_joined_channel(event, client, logger):
         user_state[user_id] = {"awaiting_new_joiner": True}
     except Exception as e:
         logger.error(f"Failed to DM user {user_id}: {e}")
+
+@app.event("channel_created")
+def handle_channel_created(event, client, logger):
+    channel = event["channel"]
+    channel_name = channel["name"]
+    channel_id = channel["id"]
+
+    # Load channels.yaml
+    with open("channels.yaml", "r") as f:
+        channels_map = yaml.safe_load(f)
+
+    # Match if the team name (key) is a substring of the channel name
+    updated = False
+    for team in channels_map:
+        if team.lower() in channel_name.lower():
+            if channel_id not in channels_map[team]:
+                channels_map[team].append(channel_id)
+                updated = True
+                logger.info(f"Added channel {channel_id} to team: {team}")
+    if updated:
+        with open("channels.yaml", "w") as f:
+            yaml.safe_dump(channels_map, f)
+
+@app.shortcut("summarize_thread_action")
+def handle_summarize_thread_action(ack, shortcut, client, respond):
+    ack()
+    channel_id = shortcut["channel"]["id"]
+    message_ts = shortcut["message"]["ts"]
+    # Use thread_ts if present, else use message_ts (for single-message threads)
+    thread_ts = shortcut["message"].get("thread_ts", message_ts)
+    # Fetch all messages in the thread
+    result = client.conversations_replies(channel=channel_id, ts=thread_ts, limit=1000)
+    messages = result.get("messages", [])
+    # Concatenate text, skipping bot messages and empty text
+    conversation = "\n".join(
+        m.get("text", "") for m in messages if m.get("text") and not m.get("subtype")
+    )
+    if not conversation.strip():
+        respond("No messages to summarize in this thread.")
+        return
+    # Summarize using Gemini
+    summary = summarize_text(conversation[:8000])  # Limit to 8k chars for Gemini
+    respond(f"*Thread Summary:*\n{summary}")
+
+def send_sync_button_to_channel(client, id_):
+    # If id_ starts with 'U', treat as user ID and open DM
+    if id_.startswith('U'):
+        dm_channel = get_dm_channel_id(client, id_)
+        channel_id = dm_channel
+    else:
+        channel_id = id_
+    client.chat_postMessage(
+        channel=channel_id,
+        text="Sync channel IDs with teams?",
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": "Click the button below to sync channel IDs with teams."}},
+            {"type": "actions", "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": "Sync Channels"}, "action_id": "sync_channels_button"}
+            ]}
+        ]
+    )
+
+@app.action("sync_channels_button")
+def handle_sync_channels_button(ack, body, client, logger, respond):
+    ack()
+    user_id = body["user"]["id"]
+    # Fetch all channels
+    result = client.conversations_list(types="public_channel,private_channel", limit=1000)
+    channels = result["channels"]
+    # Load channels.yaml
+    with open("channels.yaml", "r") as f:
+        channels_map = yaml.safe_load(f)
+    updated = False
+    for channel in channels:
+        channel_name = channel["name"]
+        channel_id = channel["id"]
+        for team in channels_map:
+            if team.lower() in channel_name.lower():
+                if channel_id not in channels_map[team]:
+                    channels_map[team].append(channel_id)
+                    updated = True
+                    logger.info(f"Added channel {channel_id} to team: {team}")
+    if updated:
+        with open("channels.yaml", "w") as f:
+            yaml.safe_dump(channels_map, f)
+        respond("Channel-to-team sync complete! Updated channels.yaml.")
+    else:
+        respond("Channel-to-team sync complete! No updates needed.")
+
+@app.command("/send_sync_button")
+def handle_send_sync_button(ack, respond, client, body):
+    ack()
+    id_ = os.environ.get("SYNC_CHANNEL_ID")
+    if not id_:
+        respond("Please set the SYNC_CHANNEL_ID environment variable.")
+        return
+    send_sync_button_to_channel(client, id_)
+    respond(f"Sync button sent to {'user' if id_.startswith('U') else 'channel'} {id_}.")
+
+@app.event("channel_deleted")
+def handle_channel_deleted(event, logger):
+    channel_id = event["channel"]
+    # Load channels.yaml
+    with open("channels.yaml", "r") as f:
+        channels_map = yaml.safe_load(f)
+    updated = False
+    for team, channel_list in channels_map.items():
+        if channel_id in channel_list:
+            channel_list.remove(channel_id)
+            updated = True
+            logger.info(f"Removed deleted channel {channel_id} from team: {team}")
+    if updated:
+        with open("channels.yaml", "w") as f:
+            yaml.safe_dump(channels_map, f)
+
+# Example: Call this at startup or from a command to send the button to the admin
+# send_sync_button_to_admin(app.client)
 
 if __name__ == "__main__":
     handler = SocketModeHandler(app, SLACK_APP_TOKEN)
