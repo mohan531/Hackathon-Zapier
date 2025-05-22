@@ -1,0 +1,8 @@
+resources:
+  OKRs: "https://www.atlassian.com/work-management/set-goals/objectives-key-results"
+  agile: "https://www.atlassian.com/agile"
+  slack bots: "https://api.slack.com/start/building"
+  python: "https://realpython.com/"
+  gpt: "https://platform.openai.com/docs/"
+  gemini: "https://deepmind.google/technologies/gemini/"
+  confluence: "https://support.atlassian.com/confluence-cloud/"
