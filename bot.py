@@ -27,6 +27,16 @@ app = App(token=SLACK_BOT_TOKEN)
 # Store user state in memory (for demo; use a DB for production)
 user_state = {}
 
+ONBOARDING_CHECKLIST = [
+    "Set up your email account",
+    "Read the employee handbook",
+    "Join all relevant Slack channels",
+    "Schedule a 1:1 with your manager",
+    "Complete security training",
+    "Access internal documentation",
+    "Introduce yourself in #general"
+]
+
 def get_dm_channel_id(client, user_id):
     response = client.conversations_open(users=user_id)
     return response["channel"]["id"]
@@ -487,6 +497,97 @@ def handle_channel_deleted(event, logger):
     if updated:
         with open("channels.yaml", "w") as f:
             yaml.safe_dump(channels_map, f)
+
+@app.command("/send_onboarding_checklist")
+def send_onboarding_checklist_cmd(ack, body, client, respond):
+    ack()
+    channel_id = body["channel_id"]
+    client.chat_postMessage(
+        channel=channel_id,
+        text="Send onboarding checklist to all members?",
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": "*Send onboarding checklist to all members of this channel?*"}},
+            {"type": "actions", "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": "Send Canvas Checklist"}, "action_id": "send_canvas_checklist", "value": channel_id}
+            ]}
+        ]
+    )
+    respond("Checklist trigger button sent to channel.")
+
+@app.action("send_canvas_checklist")
+def handle_send_canvas_checklist(ack, body, client):
+    ack()
+    channel_id = body["actions"][0]["value"]
+    members = []
+    try:
+        result = client.conversations_members(channel=channel_id)
+        members = result["members"]
+    except Exception as e:
+        client.chat_postMessage(channel=channel_id, text=f"Failed to fetch members: {e}")
+        return
+    for user_id in members:
+        if user_id.startswith("U"):
+            dm_channel = get_dm_channel_id(client, user_id)
+            canvas_blocks = [
+                {"type": "header", "text": {"type": "plain_text", "text": "📝 JumpCloud Onboarding Canvas"}},
+                {"type": "divider"},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Welcome! Here is your onboarding checklist for the first week. Mark each as you complete it."}},
+                {"type": "divider"}
+            ]
+            for idx, item in enumerate(ONBOARDING_CHECKLIST):
+                canvas_blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f":white_large_square: {item}"},
+                    "accessory": {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Mark as done"},
+                        "action_id": f"canvas_checklist_done_{idx}",
+                        "value": str(idx)
+                    }
+                })
+            client.chat_postMessage(
+                channel=dm_channel,
+                blocks=canvas_blocks,
+                text="JumpCloud Onboarding Canvas"
+            )
+            user_state[user_id] = {"canvas_checklist": [False]*len(ONBOARDING_CHECKLIST)}
+
+for idx in range(len(ONBOARDING_CHECKLIST)):
+    def make_canvas_checklist_handler(idx):
+        def handler(ack, body, client, idx=idx):
+            ack()
+            user_id = body["user"]["id"]
+            if user_id in user_state and "canvas_checklist" in user_state[user_id]:
+                user_state[user_id]["canvas_checklist"][idx] = True
+            canvas_blocks = [
+                {"type": "header", "text": {"type": "plain_text", "text": "📝 JumpCloud Onboarding Canvas"}},
+                {"type": "divider"},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Welcome! Here is your onboarding checklist for the first week. Mark each as you complete it."}},
+                {"type": "divider"}
+            ]
+            for i, item in enumerate(ONBOARDING_CHECKLIST):
+                checked = user_state[user_id]["canvas_checklist"][i]
+                status = ":white_check_mark:" if checked else ":white_large_square:"
+                canvas_blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"{status} {item}"},
+                    "accessory": {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Mark as done" if not checked else "Done!"},
+                        "action_id": f"canvas_checklist_done_{i}",
+                        "value": str(i),
+                        "style": "primary" if not checked else "default",
+                        "disabled": checked
+                    }
+                })
+            dm_channel = get_dm_channel_id(client, user_id)
+            client.chat_postMessage(
+                channel=dm_channel,
+                blocks=canvas_blocks,
+                text="Updated JumpCloud Onboarding Canvas."
+            )
+        return handler
+    app.action(f"canvas_checklist_done_{idx}")(make_canvas_checklist_handler(idx))
 
 # Example: Call this at startup or from a command to send the button to the admin
 # send_sync_button_to_admin(app.client)
