@@ -22,6 +22,11 @@ with open("channels.yaml", "r") as f:
 with open("errors.yaml", "r") as f:
     ERRORS = yaml.safe_load(f)["errors"]
 
+#load online resources
+with open("resources.yaml", "r") as f:
+    yaml_data = yaml.safe_load(f)
+    RESOURCES = yaml_data["resources"]
+
 # Load team checklists from YAML
 with open("teams.yaml", "r") as f:
     TEAM_DATA = yaml.safe_load(f)
@@ -330,6 +335,7 @@ def handle_info_error(ack, body, client):
 def handle_summarize_channel(ack, body, client, respond, context):
     ack()
     channel_id = body["channel_id"]
+    print("Channel ID used in conversations_history:", channel_id)
     user_id = body["user_id"]
     text = body.get("text", "").strip()
     thread_ts = None
@@ -373,6 +379,16 @@ def handle_summarize_channel(ack, body, client, respond, context):
         return
     summary = summarize_text(conversation[:8000])
     respond(f"*Channel Summary:*{summary}")
+
+    # Suggest contextual resources
+    suggestions = suggest_resources(conversation[:8000], RESOURCES)
+    print("Suggestions from suggest_resources:", suggestions)
+    if suggestions:
+        respond("*📚 Helpful Resources Based on the Summary:*")
+        for suggestion in suggestions:
+            respond(suggestion)
+    else:
+        respond("Nothing to Suggest!!! Carry On ")
 
 @app.event("member_joined_channel")
 def handle_member_joined_channel(event, client, logger):
@@ -441,6 +457,15 @@ def handle_summarize_thread_action(ack, shortcut, client, respond):
     # Summarize using Gemini
     summary = summarize_text(conversation[:8000])  # Limit to 8k chars for Gemini
     respond(f"*Thread Summary:*\n{summary}")
+
+    # Suggest contextual resources
+    suggestions = suggest_resources(summary, RESOURCES)
+    if suggestions:
+        respond("*📚 Helpful Resources Based on the Summary:*")
+        for suggestion in suggestions:
+            respond(suggestion)
+    else:
+        respond("Nothing to Suggest!!! Carry On ")
 
 def send_sync_button_to_channel(client, id_):
     # If id_ starts with 'U', treat as user ID and open DM
@@ -611,6 +636,20 @@ for idx in range(10):  # Support up to 10 checklist items per team
 
 # Example: Call this at startup or from a command to send the button to the admin
 # send_sync_button_to_admin(app.client)
+
+#suggest online resources
+def suggest_resources(summary: str, resources_data: dict) -> list:
+    matched = []
+    summary_lower = summary.lower()
+    
+    for keyword, url in resources_data.items():
+        if keyword.lower() in summary_lower:
+            matched.append(f"{keyword}: {url}")
+    
+    return matched
+
+
+
 
 if __name__ == "__main__":
     handler = SocketModeHandler(app, SLACK_APP_TOKEN)
