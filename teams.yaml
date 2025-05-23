@@ -1,10 +1,28 @@
 Hydrogen:
-  - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/1477247378/Dynamic+Groups+UI+Overview
-    priority: 1
-  - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/2380300323/Primary+User+on+a+Device+Enrollment+Flow+Questions
-    priority: 2
+  links:
+    - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/1477247378/Dynamic+Groups+UI+Overview
+      priority: 1
+    - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/2380300323/Primary+User+on+a+Device+Enrollment+Flow+Questions
+      priority: 2
+  checklist:
+    - Set up your Hydrogen email account
+    - Read the Hydrogen team handbook
+    - Join #hydrogen-team channel
+    - Meet your Hydrogen mentor
+    - Complete Hydrogen security training
+    - Access Hydrogen documentation
+    - Post an intro in #hydrogen-intros
 Deuterium:
-  - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/2380300323/Primary+User+on+a+Device+Enrollment+Flow+Questions
-    priority: 1
-  - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/1477247378/Dynamic+Groups+UI+Overview
-    priority: 2
+  links:
+    - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/2380300323/Primary+User+on+a+Device+Enrollment+Flow+Questions
+      priority: 1
+    - url: https://jumpcloud.atlassian.net/wiki/spaces/ET/pages/1477247378/Dynamic+Groups+UI+Overview
+      priority: 2
+  checklist:
+    - Set up your Deuterium email account
+    - Read the Deuterium team handbook
+    - Join #deuterium-team channel
+    - Meet your Deuterium buddy
+    - Complete Deuterium security training
+    - Access Deuterium documentation
+    - Post an intro in #deuterium-intros

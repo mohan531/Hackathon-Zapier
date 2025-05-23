@@ -22,12 +22,25 @@ with open("channels.yaml", "r") as f:
 with open("errors.yaml", "r") as f:
     ERRORS = yaml.safe_load(f)["errors"]
 
+# Load team checklists from YAML
+with open("teams.yaml", "r") as f:
+    TEAM_DATA = yaml.safe_load(f)
+
 app = App(token=SLACK_BOT_TOKEN)
 
 # Store user state in memory (for demo; use a DB for production)
 user_state = {}
 
-ONBOARDING_CHECKLIST = [
+def get_team_checklist(team_name):
+    team = TEAM_DATA.get(team_name)
+    if team and isinstance(team, list):
+        # Old format, no checklist
+        return None
+    if team and "checklist" in team:
+        return team["checklist"]
+    return None
+
+DEFAULT_CHECKLIST = [
     "Set up your email account",
     "Read the employee handbook",
     "Join all relevant Slack channels",
@@ -131,8 +144,10 @@ def handle_select_teams(ack, body, client):
     all_links = []
     all_channels = set()
     for team in selected_teams:
-        links = TEAM_LINKS.get(team, [])
-        all_links.extend(links)
+        # Use only the 'links' list for each team
+        team_data = TEAM_LINKS.get(team, {})
+        team_links = team_data.get('links', []) if isinstance(team_data, dict) else team_data
+        all_links.extend(team_links)
         team_channels = CHANNEL_MAP.get(team, [])
         all_channels.update(team_channels)
     common_channels = CHANNEL_MAP.get("common", [])
@@ -157,7 +172,7 @@ def handle_select_teams(ack, body, client):
         channel=dm_channel,
         text=f"Here are the links for your selected team(s):\n{links_str}\n\nIf you want a summary of any link, reply with the link. Otherwise, say 'done'."
     )
-    user_state[user_id] = {"teams": selected_teams, "links": [l['url'] for l in all_links], "awaiting_summarize": True}
+    user_state[user_id] = {"teams": selected_teams, "links": [l['url'] for l in all_links if isinstance(l, dict) and 'url' in l], "awaiting_summarize": True}
 
 @app.event("app_mention")
 @app.event("message")
@@ -525,16 +540,19 @@ def handle_send_canvas_checklist(ack, body, client):
     except Exception as e:
         client.chat_postMessage(channel=channel_id, text=f"Failed to fetch members: {e}")
         return
+    # For demo, ask for team name or use a default (could be improved to map users to teams)
+    team_name = "Hydrogen"  # TODO: Replace with logic to determine user's team
+    checklist = get_team_checklist(team_name) or DEFAULT_CHECKLIST
     for user_id in members:
         if user_id.startswith("U"):
             dm_channel = get_dm_channel_id(client, user_id)
             canvas_blocks = [
-                {"type": "header", "text": {"type": "plain_text", "text": "📝 JumpCloud Onboarding Canvas"}},
+                {"type": "header", "text": {"type": "plain_text", "text": f"📝 {team_name} Onboarding Canvas"}},
                 {"type": "divider"},
-                {"type": "section", "text": {"type": "mrkdwn", "text": "Welcome! Here is your onboarding checklist for the first week. Mark each as you complete it."}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"Welcome! Here is your onboarding checklist for the first week. Mark each as you complete it."}},
                 {"type": "divider"}
             ]
-            for idx, item in enumerate(ONBOARDING_CHECKLIST):
+            for idx, item in enumerate(checklist):
                 canvas_blocks.append({
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": f":white_large_square: {item}"},
@@ -548,24 +566,26 @@ def handle_send_canvas_checklist(ack, body, client):
             client.chat_postMessage(
                 channel=dm_channel,
                 blocks=canvas_blocks,
-                text="JumpCloud Onboarding Canvas"
+                text=f"{team_name} Onboarding Canvas"
             )
-            user_state[user_id] = {"canvas_checklist": [False]*len(ONBOARDING_CHECKLIST)}
+            user_state[user_id] = {"canvas_checklist": [False]*len(checklist), "team": team_name, "checklist_items": checklist}
 
-for idx in range(len(ONBOARDING_CHECKLIST)):
+for idx in range(10):  # Support up to 10 checklist items per team
     def make_canvas_checklist_handler(idx):
         def handler(ack, body, client, idx=idx):
             ack()
             user_id = body["user"]["id"]
+            state = user_state.get(user_id, {})
+            checklist = state.get("checklist_items", DEFAULT_CHECKLIST)
             if user_id in user_state and "canvas_checklist" in user_state[user_id]:
                 user_state[user_id]["canvas_checklist"][idx] = True
             canvas_blocks = [
-                {"type": "header", "text": {"type": "plain_text", "text": "📝 JumpCloud Onboarding Canvas"}},
+                {"type": "header", "text": {"type": "plain_text", "text": f"📝 {state.get('team', 'Onboarding')} Onboarding Canvas"}},
                 {"type": "divider"},
                 {"type": "section", "text": {"type": "mrkdwn", "text": "Welcome! Here is your onboarding checklist for the first week. Mark each as you complete it."}},
                 {"type": "divider"}
             ]
-            for i, item in enumerate(ONBOARDING_CHECKLIST):
+            for i, item in enumerate(checklist):
                 checked = user_state[user_id]["canvas_checklist"][i]
                 status = ":white_check_mark:" if checked else ":white_large_square:"
                 canvas_blocks.append({
@@ -584,7 +604,7 @@ for idx in range(len(ONBOARDING_CHECKLIST)):
             client.chat_postMessage(
                 channel=dm_channel,
                 blocks=canvas_blocks,
-                text="Updated JumpCloud Onboarding Canvas."
+                text=f"Updated {state.get('team', 'Onboarding')} Onboarding Canvas."
             )
         return handler
     app.action(f"canvas_checklist_done_{idx}")(make_canvas_checklist_handler(idx))
